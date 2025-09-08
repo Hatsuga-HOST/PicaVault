@@ -3,6 +3,8 @@
 -- Enhanced with Player Movement Detection, Professional UI, and Improved Teleportation
 -- Triple Loop Teleport System with Death Detection and Auto-Resume
 -- Added Advanced Movement Routines: Circling, Forward/Backward Movement
+-- Added Anti-Fall Damage, Stronger Bypass, and FPS Boost
+-- Improved Ground Detection for Safer Teleportation
 
 if game.PlaceId == 102234703920418 then
 
@@ -43,21 +45,13 @@ local movementThreshold = 2 -- Jarak minimum untuk dianggap bergerak
 local teleportBypassEnabled = true
 local networkOwnershipBypass = true
 
--- Fungsi untuk mendapatkan kepemilikan jaringan
-local function setNetworkOwnership(part)
-    if networkOwnershipBypass and part and part:IsA("BasePart") then
-        pcall(function()
-            part:SetNetworkOwner(nil)
-        end)
-    end
-end
+-- Variabel untuk anti fall damage
+local antiFallDamageEnabled = true
+local originalGravity
+local antiFallConnections = {}
 
--- Fungsi untuk menyimpan progress saat ini
-local function saveProgress(phase, cycle, locationIndex)
-    currentPhase = phase
-    currentCycle = cycle
-    currentLocationIndex = locationIndex
-end
+-- Variabel untuk FPS boost
+local fpsBoostEnabled = true
 
 -- Fungsi untuk membuat notifikasi profesional premium
 local function createNotification(title, message, duration, notificationType)
@@ -324,6 +318,229 @@ local function createNotification(title, message, duration, notificationType)
     return screenGui
 end
 
+-- Fungsi untuk mengaktifkan FPS Boost
+local function enableFPSBoost()
+    if not fpsBoostEnabled then return end
+    
+    -- Mengurangi kualitas grafis untuk meningkatkan FPS
+    settings().Rendering.QualityLevel = 1
+    
+    -- Menonaktifkan efek visual yang berat
+    local lighting = game:GetService("Lighting")
+    lighting.GlobalShadows = false
+    lighting.FogEnd = 100000
+    lighting.Brightness = 2
+    
+    -- Mengurangi detail partikel
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("ParticleEmitter") then
+            obj.Rate = 1
+        elseif obj:IsA("Explosion") then
+            obj.BlastPressure = 1
+            obj.BlastRadius = 1
+        end
+    end
+    
+    -- Mengoptimalkan karakter
+    if player.Character then
+        for _, part in pairs(player.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Material = Enum.Material.Plastic
+            end
+        end
+    end
+    
+    createNotification("FPS Boost", "Graphics optimized for maximum performance", 3, "info")
+end
+
+-- ================================
+-- IMPROVED ANTI-FALL DAMAGE SYSTEM
+-- ================================
+local function enableAntiFallDamage()
+    if not antiFallDamageEnabled then return end
+    
+    -- Simpan gravity asli
+    originalGravity = workspace.Gravity
+    
+    -- Kurangi gravity untuk mengurangi damage jatuh
+    workspace.Gravity = 50
+    
+    -- Hapus koneksi lama jika ada
+    for _, conn in pairs(antiFallConnections) do
+        conn:Disconnect()
+    end
+    antiFallConnections = {}
+    
+    -- Fungsi untuk menangani karakter baru
+    local function onCharacterAdded(character)
+        if not antiFallDamageEnabled then return end
+        
+        -- Tunggu humanoid
+        local humanoid = character:WaitForChild("Humanoid")
+        
+        -- Deteksi saat karakter mulai jatuh
+        local stateConnection = humanoid.StateChanged:Connect(function(oldState, newState)
+            if not antiFallDamageEnabled then return end
+            
+            if newState == Enum.HumanoidStateType.Freefall then
+                -- Kurangi velocity jatuh saat mulai jatuh
+                local rootPart = character:FindFirstChild("HumanoidRootPart")
+                if rootPart then
+                    -- Gunakan AssemblyLinearVelocity untuk kontrol yang lebih baik
+                    pcall(function()
+                        rootPart.AssemblyLinearVelocity = Vector3.new(
+                            rootPart.AssemblyLinearVelocity.X,
+                            math.min(rootPart.AssemblyLinearVelocity.Y, -10), -- Batasi kecepatan jatuh
+                            rootPart.AssemblyLinearVelocity.Z
+                        )
+                    end)
+                end
+            elseif newState == Enum.HumanoidStateType.Landed then
+                -- Saat mendarat, reset fall distance untuk mencegah damage
+                humanoid.FallDistance = 0
+            end
+        end)
+        table.insert(antiFallConnections, stateConnection)
+        
+        -- Connection untuk reset fall distance secara berkala
+        local fallDistanceReset = RunService.Heartbeat:Connect(function()
+            if not antiFallDamageEnabled or not humanoid or humanoid.Health <= 0 then
+                return
+            end
+            
+            -- Reset fall distance untuk mencegah damage
+            humanoid.FallDistance = 0
+            
+            -- Kontrol kecepatan jatuh secara aktif
+            local rootPart = character:FindFirstChild("HumanoidRootPart")
+            if rootPart and rootPart.AssemblyLinearVelocity.Y < -50 then
+                pcall(function()
+                    rootPart.AssemblyLinearVelocity = Vector3.new(
+                        rootPart.AssemblyLinearVelocity.X,
+                        -50, -- Batasi kecepatan jatuh maksimum
+                        rootPart.AssemblyLinearVelocity.Z
+                    )
+                end)
+            end
+        end)
+        table.insert(antiFallConnections, fallDistanceReset)
+        
+        -- Deteksi saat bagian tubuh menyentuh sesuatu
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local touchConnection = part.Touched:Connect(function(hit)
+                    if not antiFallDamageEnabled then return end
+                    
+                    -- Jika bagian tubuh menyentuh sesuatu, reset fall distance
+                    if humanoid and humanoid.Health > 0 then
+                        humanoid.FallDistance = 0
+                    end
+                end)
+                table.insert(antiFallConnections, touchConnection)
+            end
+        end
+        
+        -- Deteksi saat karakter menerima damage
+        local healthConnection = humanoid.HealthChanged:Connect(function()
+            if not antiFallDamageEnabled then return end
+            
+            -- Jika health berkurang secara tiba-tiba (mungkin fall damage), sembuhkan
+            if humanoid.Health < humanoid.MaxHealth then
+                -- Cegah fall damage dengan mengatur ulang fall distance
+                humanoid.FallDistance = 0
+                
+                -- Jika health rendah, sembuhkan (hanya untuk fall damage)
+                if humanoid.Health < 50 then
+                    humanoid.Health = humanoid.MaxHealth
+                end
+            end
+        end)
+        table.insert(antiFallConnections, healthConnection)
+    end
+    
+    -- Setup untuk karakter saat ini dan yang akan datang
+    if player.Character then
+        onCharacterAdded(player.Character)
+    end
+    local charAddedConn = player.CharacterAdded:Connect(onCharacterAdded)
+    table.insert(antiFallConnections, charAddedConn)
+    
+    -- Juga lindungi dari fall damage melalui perubahan workspace gravity
+    local gravityConnection = RunService.Heartbeat:Connect(function()
+        if not antiFallDamageEnabled then return end
+        
+        -- Pastikan gravity tetap rendah
+        if workspace.Gravity > 75 then
+            workspace.Gravity = 50
+        end
+    end)
+    table.insert(antiFallConnections, gravityConnection)
+    
+    createNotification("Anti-Fall Damage", "Advanced fall damage protection activated", 3, "info")
+end
+
+-- Fungsi untuk menonaktifkan Anti-Fall Damage
+local function disableAntiFallDamage()
+    antiFallDamageEnabled = false
+    
+    -- Putuskan semua koneksi
+    for _, conn in pairs(antiFallConnections) do
+        conn:Disconnect()
+    end
+    antiFallConnections = {}
+    
+    -- Kembalikan gravity ke nilai semula
+    if originalGravity then
+        workspace.Gravity = originalGravity
+    end
+end
+
+-- Fungsi untuk mendapatkan kepemilikan jaringan
+local function setNetworkOwnership(part)
+    if networkOwnershipBypass and part and part:IsA("BasePart") then
+        pcall(function()
+            part:SetNetworkOwner(nil)
+        end)
+    end
+end
+
+-- Fungsi untuk bypass yang lebih kuat
+local function enhancedBypass()
+    -- Method 1: Gunakan metode network ownership yang lebih agresif
+    if player.Character then
+        for _, part in ipairs(player.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                setNetworkOwnership(part)
+            end
+        end
+    end
+    
+    -- Method 2: Manipulasi physics slightly untuk bypass deteksi
+    RunService.Heartbeat:Connect(function()
+        if not teleportBypassEnabled or not player.Character then return end
+        
+        local humanoid = player.Character:FindFirstChild("Humanoid")
+        local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+        
+        if humanoid and rootPart then
+            -- Manipulasi velocity secara halus
+            rootPart.Velocity = Vector3.new(rootPart.Velocity.X * 0.95, rootPart.Velocity.Y, rootPart.Velocity.Z * 0.95)
+            
+            -- Manipulasi jaringan untuk mengurangi deteksi
+            setNetworkOwnership(rootPart)
+        end
+    end)
+    
+    createNotification("Enhanced Bypass", "Advanced teleport bypass activated", 3, "info")
+end
+
+-- Fungsi untuk menyimpan progress saat ini
+local function saveProgress(phase, cycle, locationIndex)
+    currentPhase = phase
+    currentCycle = cycle
+    currentLocationIndex = locationIndex
+end
+
 -- Fungsi untuk memastikan karakter siap
 local function ensureCharacter()
     if not player.Character then
@@ -332,43 +549,110 @@ local function ensureCharacter()
     
     local character = player.Character
     if not character:FindFirstChild("HumanoidRootPart") then
-        repeat wait() until character:FindFirstChild("HumanoidRootPart")
+        repeat wait() until character:FindFirstChild("HumanoidRootPart") or not character.Parent
     end
     
     if not character:FindFirstChild("Humanoid") then
-        repeat wait() until character:FindFirstChild("Humanoid")
+        repeat wait() until character:FindFirstChild("Humanoid") or not character.Parent
     end
     
     return character
 end
 
--- Fungsi untuk mendapatkan posisi tanah di bawah titik tertentu
+-- ================================
+-- IMPROVED GROUND DETECTION SYSTEM
+-- ================================
 local function findGroundPosition(position)
-    local rayOrigin = position + Vector3.new(0, 100, 0)  -- Naik lebih tinggi untuk memastikan
-    local rayDirection = Vector3.new(0, -200, 0)  -- Raycast lebih jauh
+    -- Naik lebih tinggi untuk memastikan kita di atas semua objek
+    local rayOrigin = position + Vector3.new(0, 200, 0)
+    local rayDirection = Vector3.new(0, -400, 0)  -- Raycast lebih jauh
     local raycastParams = RaycastParams.new()
     raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    raycastParams.FilterDescendantsInstances = {player.Character}
+    
+    if player.Character then
+        raycastParams.FilterDescendantsInstances = {player.Character}
+    end
+    
+    -- Lakukan raycast untuk menemukan tanah
+    local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    
+    if raycastResult and raycastResult.Instance then
+        -- Pastikan kita tidak mendarat di air atau objek berbahaya
+        local material = raycastResult.Material
+        if material == Enum.Material.Water or material == Enum.Material.Air then
+            -- Jika mengenai air, cari posisi alternatif
+            local alternativeOrigin = position + Vector3.new(10, 200, 10)
+            local alternativeResult = workspace:Raycast(alternativeOrigin, rayDirection, raycastParams)
+            
+            if alternativeResult and alternativeResult.Material ~= Enum.Material.Water and alternativeResult.Material ~= Enum.Material.Air then
+                return alternativeResult.Position + Vector3.new(0, 3, 0)
+            end
+            
+            -- Jika masih tidak menemukan tanah yang baik, coba posisi lain
+            alternativeOrigin = position + Vector3.new(-10, 200, -10)
+            alternativeResult = workspace:Raycast(alternativeOrigin, rayDirection, raycastParams)
+            
+            if alternativeResult and alternativeResult.Material ~= Enum.Material.Water and alternativeResult.Material ~= Enum.Material.Air then
+                return alternativeResult.Position + Vector3.new(0, 3, 0)
+            end
+        end
+        
+        -- Kembalikan posisi tanah yang aman dengan sedikit offset
+        return raycastResult.Position + Vector3.new(0, 3, 0)
+    end
+    
+    -- Fallback: gunakan posisi Y dari lokasi teleport jika raycast gagal
+    return Vector3.new(position.X, position.Y + 3, position.Z)
+end
+
+-- Fungsi untuk memastikan karakter benar-benar di tanah setelah teleport
+local function ensureCharacterOnGround()
+    local character = player.Character
+    if not character then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    
+    if not humanoid or not hrp then return false end
+    
+    -- Periksa apakah karakter sudah di tanah
+    if humanoid:GetState() == Enum.HumanoidStateType.Running or humanoid:GetState() == Enum.HumanoidStateType.RunningNoPhysics then
+        return true
+    end
+    
+    -- Jika tidak di tanah, lakukan raycast untuk menemukan tanah
+    local rayOrigin = hrp.Position
+    local rayDirection = Vector3.new(0, -50, 0)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    raycastParams.FilterDescendantsInstances = {character}
     
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
     
     if raycastResult then
-        return raycastResult.Position + Vector3.new(0, 3, 0)  -- Naik sedikit di atas tanah
+        -- Pindahkan karakter ke posisi tanah
+        hrp.CFrame = CFrame.new(raycastResult.Position + Vector3.new(0, 3, 0))
+        return true
     end
     
-    return position  -- Fallback ke posisi asli
+    return false
 end
 
 -- Fungsi untuk membuat efek getar yang lebih halus
 local function shakeCharacter(duration, intensity)
     local character = ensureCharacter()
-    local hrp = character.HumanoidRootPart
+    if not character or not character.Parent then return end
     
-    local startTime = os.clock()
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    local startTime = tick()
     local originalPosition = hrp.Position
     
-    while os.clock() - startTime < duration do
-        local progress = (os.clock() - startTime) / duration
+    while tick() - startTime < duration do
+        if not character or not character.Parent then break end
+        
+        local progress = (tick() - startTime) / duration
         local currentIntensity = intensity * (1 - progress)  -- Kurangi intensitas seiring waktu
         
         -- Buat offset yang lebih kecil dan halus
@@ -383,12 +667,16 @@ local function shakeCharacter(duration, intensity)
     end
     
     -- Kembali ke posisi semula
-    hrp.CFrame = CFrame.new(originalPosition)
+    if character and character.Parent and hrp and hrp.Parent then
+        hrp.CFrame = CFrame.new(originalPosition)
+    end
 end
 
 -- Fungsi untuk membuat avatar bergerak-gerak di tempat dengan lebih halus
 local function animateCharacterAtLocation(duration)
     local character = ensureCharacter()
+    if not character or not character.Parent then return end
+    
     local humanoid = character:FindFirstChild("Humanoid")
     local hrp = character:FindFirstChild("HumanoidRootPart")
     
@@ -398,13 +686,15 @@ local function animateCharacterAtLocation(duration)
     local originalWalkSpeed = humanoid.WalkSpeed
     humanoid.WalkSpeed = 0  -- Set walk speed ke 0 agar tidak bisa bergerak
     
-    local startTime = os.clock()
+    local startTime = tick()
     local originalPosition = hrp.Position
     
     -- Animasi: 3 detik bergerak-gerak/getar di tempat dengan intensitas rendah
     createNotification("Area Scanning", "Analyzing environment for optimal path...", 3, "info")
     
-    while os.clock() - startTime < 3 do
+    while tick() - startTime < 3 do
+        if not character or not character.Parent then break end
+        
         -- Gerakan kecil acak yang lebih halus
         local offset = Vector3.new(
             (math.random() - 0.5) * 0.5,  -- Intensitas dikurangi
@@ -433,7 +723,7 @@ end
 -- Fungsi untuk mendeteksi gerakan pemain
 local function trackPlayerMovement()
     local character = player.Character
-    if not character then return false end
+    if not character or not character.Parent then return false end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
@@ -449,11 +739,11 @@ local function trackPlayerMovement()
         table.insert(movementHistory, 1, {
             position = currentPosition,
             distance = distance,
-            time = os.clock()
+            time = tick()
         })
         
         -- Hapus data yang terlalu lama (hanya simpan 10 detik terakhir)
-        while #movementHistory > 0 and os.clock() - movementHistory[#movementHistory].time > 10 do
+        while #movementHistory > 0 and tick() - movementHistory[#movementHistory].time > 10 do
             table.remove(movementHistory, #movementHistory)
         end
         
@@ -481,7 +771,7 @@ end
 -- Fungsi untuk memeriksa apakah pemain sedang bergerak menuju suatu lokasi
 local function isMovingTowardLocation(targetLocation)
     local character = player.Character
-    if not character then return false end
+    if not character or not character.Parent then return false end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp or #movementHistory < 2 then return false end
@@ -500,7 +790,7 @@ end
 -- Fungsi untuk menghitung jarak ke lokasi target
 local function getDistanceToLocation(targetLocation)
     local character = player.Character
-    if not character then return math.huge end
+    if not character or not character.Parent then return math.huge end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return math.huge end
@@ -508,13 +798,17 @@ local function getDistanceToLocation(targetLocation)
     return (hrp.Position - targetLocation).Magnitude
 end
 
--- Fungsi bypass teleport tingkat tinggi
+-- Fungsi bypass teleport tingkat tinggi dengan ground detection yang lebih baik
 local function advancedTeleport(position)
     local character = ensureCharacter()
-    local hrp = character.HumanoidRootPart
-    local humanoid = character.Humanoid
+    if not character or not character.Parent then return false end
     
-    -- Cari posisi tanah yang tepat
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChild("Humanoid")
+    
+    if not hrp or not humanoid then return false end
+    
+    -- Cari posisi tanah yang tepat dengan sistem yang lebih baik
     local groundPosition = findGroundPosition(position)
     
     -- Aktifkan bypass teleport jika diaktifkan
@@ -539,10 +833,19 @@ local function advancedTeleport(position)
         hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         
+        -- Pastikan karakter benar-benar di tanah
+        wait(0.2)
+        ensureCharacterOnGround()
+        
         return true
     else
         -- Teleport biasa (fallback)
         hrp.CFrame = CFrame.new(groundPosition)
+        
+        -- Pastikan karakter benar-benar di tanah
+        wait(0.2)
+        ensureCharacterOnGround()
+        
         return true
     end
 end
@@ -550,6 +853,8 @@ end
 -- Fungsi untuk membuat karakter berjalan memutar (muter) tiga kali dengan radius lebih kecil
 local function circleMovement()
     local character = ensureCharacter()
+    if not character or not character.Parent then return end
+    
     local humanoid = character:FindFirstChild("Humanoid")
     local hrp = character:FindFirstChild("HumanoidRootPart")
     
@@ -589,8 +894,8 @@ local function circleMovement()
             humanoid:MoveTo(point)
             
             -- Tunggu sampai karakter mendekati titik atau timeout
-            local startTime = os.clock()
-            while (hrp.Position - point).Magnitude > 2 and os.clock() - startTime < 0.8 do
+            local startTime = tick()
+            while (hrp.Position - point).Magnitude > 2 and tick() - startTime < 0.8 do
                 wait(0.1)
                 if isPlayerDead then break end
             end
@@ -612,6 +917,8 @@ end
 -- Fungsi untuk membuat karakter jalan maju mundur dengan jarak lebih pendek
 local function forwardBackwardMovement()
     local character = ensureCharacter()
+    if not character or not character.Parent then return end
+    
     local humanoid = character:FindFirstChild("Humanoid")
     local hrp = character:FindFirstChild("HumanoidRootPart")
     
@@ -645,8 +952,8 @@ local function forwardBackwardMovement()
         humanoid:MoveTo(forwardPosition)
         
         -- Tunggu sampai karakter sampai di posisi maju atau timeout
-        local startTime = os.clock()
-        while (hrp.Position - forwardPosition).Magnitude > 2 and os.clock() - startTime < 1.5 do
+        local startTime = tick()
+        while (hrp.Position - forwardPosition).Magnitude > 2 and tick() - startTime < 1.5 do
             wait(0.1)
             if isPlayerDead then break end
         end
@@ -657,8 +964,8 @@ local function forwardBackwardMovement()
         humanoid:MoveTo(originalPosition)
         
         -- Tunggu sampai karakter kembali ke posisi awal atau timeout
-        startTime = os.clock()
-        while (hrp.Position - originalPosition).Magnitude > 2 and os.clock() - startTime < 1.5 do
+        startTime = tick()
+        while (hrp.Position - originalPosition).Magnitude > 2 and tick() - startTime < 1.5 do
             wait(0.1)
             if isPlayerDead then break end
         end
@@ -700,13 +1007,17 @@ local function performMovementRoutine()
     createNotification("Routine Complete", "Special movement sequence finished", 2, "success")
 end
 
--- Fungsi untuk teleport dengan gerakan natural dan ground detection
+-- Fungsi untuk teleport dengan gerakan natural dan ground detection yang lebih baik
 local function adaptiveTeleport(position)
     local character = ensureCharacter()
-    local hrp = character.HumanoidRootPart
-    local humanoid = character.Humanoid
+    if not character or not character.Parent then return false end
     
-    -- Cari posisi tanah yang tepat
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChild("Humanoid")
+    
+    if not hrp or not humanoid then return false end
+    
+    -- Cari posisi tanah yang tepat dengan sistem yang lebih baik
     local groundPosition = findGroundPosition(position)
     
     -- Periksa apakah pemain sudah dekat dengan lokasi target
@@ -757,10 +1068,7 @@ local function adaptiveTeleport(position)
     
     -- Pastikan karakter benar-benar menyentuh tanah
     wait(0.3)
-    if hrp.Position.Y > groundPosition.Y + 5 then
-        -- Jika masih di udara, turunkan ke tanah
-        hrp.CFrame = CFrame.new(groundPosition)
-    end
+    ensureCharacterOnGround()
     
     -- Jalankan rutinitas gerakan khusus setelah tiba di lokasi
     performMovementRoutine()
@@ -791,15 +1099,6 @@ local function respawnCharacter()
     -- Tunggu karakter respawn
     ensureCharacter()
     createNotification("Respawn Complete", "Character has been successfully reset", 2, "success")
-end
-
--- Fungsi untuk memeriksa apakah lokasi aman untuk teleport
-local function isLocationSafe(position)
-    -- Periksa apakah ada part di sekitar posisi
-    local region = Region3.new(position - Vector3.new(5, 5, 5), position + Vector3.new(5, 5, 5))
-    local parts = workspace:FindPartsInRegion3(region, nil, 10)
-    
-    return #parts > 0  -- Jika ada part, lokasi dianggap aman
 end
 
 -- Fungsi untuk memulai pelacakan gerakan pemain
@@ -1046,8 +1345,17 @@ end
 
 -- Fungsi utama untuk menjalankan script dengan sistem resume
 local function main()
+    -- Aktifkan FPS Boost
+    enableFPSBoost()
+    
+    -- Aktifkan Anti-Fall Damage (yang sudah ditingkatkan)
+    enableAntiFallDamage()
+    
+    -- Aktifkan Enhanced Bypass
+    enhancedBypass()
+    
     -- Tunggu hingga game siap
-    createNotification("System Booting", "Mount Daun Auto Summit initializing...\nTriple Loop System starting...\nAdvanced Bypass Enabled...", 2, "info")
+    createNotification("System Booting", "Mount Daun Auto Summit initializing...\nTriple Loop System starting...\nAdvanced Bypass Enabled...\nAnti-Fall Damage Activated...\nFPS Boost Applied...", 2, "info")
     wait(2)
     
     -- Setup deteksi kematian awal
@@ -1077,6 +1385,9 @@ local function main()
             break -- Keluar dari loop jika tidak perlu resume
         end
     end
+    
+    -- Nonaktifkan Anti-Fall Damage setelah selesai
+    disableAntiFallDamage()
 end
 
 -- Jalankan fungsi utama
